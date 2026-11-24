@@ -126,6 +126,10 @@ services:
         condition: service_completed_successfully
       mailpit:
         condition: service_healthy
+      # LocalExecutor runs tasks inside this container and they talk to the task
+      # execution API on the api-server; starting before it is up fails them.
+      airflow-apiserver:
+        condition: service_healthy
 
   airflow-dag-processor:
     <<: *airflow-common
