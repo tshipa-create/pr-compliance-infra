@@ -1,0 +1,17 @@
+apiVersion: 1
+datasources:
+  - name: compliance
+    uid: compliance-pg
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: compliance-db:5432
+    user: grafana_ro            # SELECT-only role from processing/sql/init/03_grafana_user.sql
+    isDefault: true
+    editable: false
+    jsonData:
+      database: compliance
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: grafana_ro
