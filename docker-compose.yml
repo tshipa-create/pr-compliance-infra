@@ -1,0 +1,210 @@
+# PR compliance pipeline - local stack.
+#
+# Based on the official Airflow 3.3.0 docker-compose.yaml, switched to LocalExecutor
+# (no Redis / Celery workers), plus:
+#   compliance-db  output Postgres (DDL from processing/sql/init), localhost:5433
+#   mailpit        local SMTP + web inbox for alert e-mails, http://localhost:8025
+#   grafana        dashboard on the output DB, http://localhost:3000
+#
+# Airflow UI: http://localhost:8080 (airflow / airflow)
+
+x-airflow-common: &airflow-common
+  build: .
+  image: pr-compliance-airflow:1.0.0
+  env_file:
+    - path: .env
+      required: true
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:-}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_ISSUER: airflow
+    AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8080}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__CORE__PARALLELISM: "8"
+    # Connections as env vars: credentials never live in code or the metadata DB.
+    AIRFLOW_CONN_COMPLIANCE_DB: postgresql://${COMPLIANCE_DB_USER:-compliance}:${COMPLIANCE_DB_PASSWORD:-change-me-local-pw}@compliance-db:5432/${COMPLIANCE_DB_NAME:-compliance}
+    AIRFLOW_CONN_SMTP_ALERTS: '{"conn_type": "smtp", "host": "mailpit", "port": 1025, "extra": {"disable_ssl": true, "disable_tls": true, "from_email": "airflow@pr-compliance.local", "timeout": 10, "retry_limit": 1}}'
+    DATA_DIR: /opt/airflow/data
+    # Overridable from the shell for `make demo` (shell > .env for interpolation).
+    REPO_ALLOWLIST: ${REPO_ALLOWLIST:-}
+    LOOKBACK_DAYS: ${LOOKBACK_DAYS:-}
+    DQ_MIN_PRS: ${DQ_MIN_PRS:-1}
+  volumes:
+    - ./data:/opt/airflow/data
+    - ./logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    airflow-db:
+      condition: service_healthy
+    compliance-db:
+      condition: service_healthy
+
+services:
+  airflow-db:
+    image: postgres:16.16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  compliance-db:
+    image: postgres:16.16
+    environment:
+      POSTGRES_USER: ${COMPLIANCE_DB_USER:-compliance}
+      POSTGRES_PASSWORD: ${COMPLIANCE_DB_PASSWORD:-change-me-local-pw}
+      POSTGRES_DB: ${COMPLIANCE_DB_NAME:-compliance}
+    ports:
+      - "${COMPLIANCE_DB_PORT:-5433}:5432"
+    volumes:
+      - compliance-db-volume:/var/lib/postgresql/data
+      # The output contract lives in the processing repo; runs on first start only.
+      - ./processing/sql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports:
+      - "${MAILPIT_PORT:-8025}:8025"   # web inbox
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      retries: 5
+    restart: always
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/airflow/data
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/data
+        /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+
+  airflow-cli:
+    <<: *airflow-common
+    profiles: ["debug"]
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command: ["bash", "-c", "airflow"]
+
+  grafana:
+    image: grafana/grafana-oss:12.4.3
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pr_compliance.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      compliance-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      retries: 5
+    restart: always
+
+volumes:
+  airflow-db-volume:
+  compliance-db-volume:

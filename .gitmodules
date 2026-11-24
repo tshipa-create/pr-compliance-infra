@@ -1,0 +1,3 @@
+[submodule "processing"]
+	path = processing
+	url = ../pr-compliance-processing
