@@ -7,7 +7,7 @@ GitHub REST API, validates and transforms with Pandas, and loads into Postgres, 
 alerting, data-quality checks and a Grafana dashboard.
 
 This is the **infra** repo (runtime). The pipeline code lives in
-[`pr-compliance-processing`](../pr-compliance-processing), pinned here as the
+[`pr-compliance-processing`](processing), pinned here as the
 `processing/` submodule.
 
 | | |
