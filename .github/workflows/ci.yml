@@ -58,9 +58,18 @@ jobs:
           while :; do
             state=$(dc airflow dags list-runs pr_compliance -o json 2>/dev/null | python3 -c '
           import json, sys
-          raw = sys.stdin.read()
-          runs = json.loads(raw[raw.index("["):]) if "[" in raw else []
-          print(next((r["state"] for r in runs if r["run_id"] == "ci-smoke"), "missing"))')
+          raw, dec = sys.stdin.read(), json.JSONDecoder()
+          runs = []
+          for i, ch in enumerate(raw):  # skip log lines like "[info ...]" before the JSON
+              if ch == "[":
+                  try:
+                      runs = dec.raw_decode(raw, i)[0]
+                      break
+                  except ValueError:
+                      pass
+          ids = ("dag_run_id", "run_id")
+          hit = (r.get("state") for r in runs if "ci-smoke" in (r.get(k) for k in ids))
+          print(next(hit, "missing"))')
             echo "ci-smoke: $state"
             case "$state" in
               success) break ;;
