@@ -21,7 +21,10 @@ jobs:
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: Dockerfile
-      - run: pipx run yamllint -d '{extends: relaxed, rules: {line-length: {max: 160}}}' docker-compose.yml grafana/ .github/
+      - name: yamllint
+        run: >-
+          pipx run yamllint -d '{extends: relaxed, rules: {line-length: {max: 160}}}'
+          docker-compose.yml grafana/ .github/
       - run: python -m json.tool grafana/dashboards/pr_compliance.json > /dev/null
 
   smoke:
