@@ -47,8 +47,27 @@ jobs:
           echo "AIRFLOW_UID=$(id -u)" >> .env
           mkdir -p data logs
       - run: docker compose up -d --build --wait
-      - name: Run the DAG once (in-process, no scheduler round-trips)
-        run: docker compose exec -T airflow-scheduler airflow dags test pr_compliance
+      # A real manual trigger through the scheduler (logical_date=None path). Not
+      # `airflow dags test`: in 3.3 it crashes in DagRun.update_state on DAGs that
+      # declare a deadline (DeadlineAlertModel.get_by_id gets a dict).
+      - name: Trigger a run and wait for it
+        timeout-minutes: 15
+        run: |
+          dc() { docker compose exec -T airflow-scheduler "$@"; }
+          dc airflow dags trigger pr_compliance --run-id ci-smoke
+          while :; do
+            state=$(dc airflow dags list-runs pr_compliance -o json 2>/dev/null | python3 -c '
+          import json, sys
+          raw = sys.stdin.read()
+          runs = json.loads(raw[raw.index("["):]) if "[" in raw else []
+          print(next((r["state"] for r in runs if r["run_id"] == "ci-smoke"), "missing"))')
+            echo "ci-smoke: $state"
+            case "$state" in
+              success) break ;;
+              failed) exit 1 ;;
+            esac
+            sleep 10
+          done
       - name: Assert rows were loaded
         run: |
           n=$(docker compose exec -T compliance-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT count(*) FROM pr_compliance"')
@@ -56,14 +75,15 @@ jobs:
           test "$n" -gt 0
       - name: Collect logs on failure
         if: failure()
-        run: docker compose logs > compose.log 2>&1 || true
+        # Airflow log paths contain ':' (run ids), which upload-artifact rejects: tar them.
+        run: |
+          docker compose logs > compose.log 2>&1 || true
+          tar -czf airflow-logs.tgz logs/ compose.log || true
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: airflow-logs
-          path: |
-            logs/
-            compose.log
+          path: airflow-logs.tgz
       - run: docker compose down -v
         if: always()
 
@@ -74,7 +94,7 @@ jobs:
         with:
           submodules: recursive
       - run: docker build -t pr-compliance-airflow:ci .
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pr-compliance-airflow:ci
           severity: CRITICAL

@@ -370,7 +370,7 @@ API calls vs. rate-limit headroom, quarantined records. It reads the output DB t
 | Unit (92): client, rate limiter, pagination, retries, extractor, window, schemas, rules, silver/gold, logging, alerts | processing | `make test` (or `uv run pytest -m "not integration"`) |
 | Integration (4): DDL, COPY + upsert idempotency, orphan removal in scope, rollback, DQ checks on Postgres 16 | processing | `COMPLIANCE_DB_URL=… uv run pytest -m integration` |
 | DAG integrity: imports, schedule/timetable, tasks, dependencies, trigger rules, callbacks | inside `apache/airflow:3.3.0` | `make test-dag` |
-| End to end | this stack | `make demo`, or CI's smoke job (`airflow dags test`) |
+| End to end | this stack | `make demo`, or CI's smoke job (manual trigger, waits for success) |
 
 Test fixtures are trimmed **real** GitHub responses. Lint (`ruff`), types
 (`mypy --strict`), coverage (~90% with integration tests) and `pip-audit` run in the
